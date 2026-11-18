@@ -1,0 +1,664 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Allocation planner, review build</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&display=swap">
+<style>
+html,body{margin:0;background:#F5F8F8}
+button{font-family:inherit}
+button:disabled{opacity:.45;cursor:default}
+button:focus-visible,input:focus-visible,textarea:focus-visible{outline:2px solid #0E9AA7;outline-offset:2px}
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script>
+/* ---- runtime shim: the same Component logic, no framework ---- */
+class DCLogic {
+  constructor(props) { this.props = props || {}; this.state = {}; }
+  setState(p) {
+    const v = typeof p === "function" ? p(this.state) : p;
+    if (v == null) return;
+    this.state = Object.assign({}, this.state, v);
+    if (!this._silent) render();
+  }
+}
+
+
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    this.state = {
+      dark: false, pod: "spotify", view: "week", group: "people",
+      weekIdx: 0, monthStart: 0, roster: false, selected: "",
+      accepted: {}, notes: {}, phases: {}, comments: {}, draftComment: "",
+      decisions: [], decisionDraft: ""
+    };
+  }
+
+  data() {
+    if (this._d) return this._d;
+    const MON = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+    const DAY = ["Mon","Tue","Wed","Thu","Fri"];
+    const weeks = [];
+    for (let i = 0; i < 13; i++) {
+      const d0 = new Date(2026, 10, 16 + i * 7);
+      const d4 = new Date(2026, 10, 20 + i * 7);
+      const days = [];
+      for (let k = 0; k < 5; k++) { const d = new Date(2026, 10, 16 + i * 7 + k); days.push(DAY[k] + " " + d.getDate()); }
+      const same = d0.getMonth() === d4.getMonth();
+      weeks.push({ label: MON[d0.getMonth()] + " " + d0.getDate(), range: MON[d0.getMonth()] + " " + d0.getDate() + "–" + (same ? "" : MON[d4.getMonth()] + " ") + d4.getDate(), days: days });
+    }
+    const SUBS = ["Production","Design","Motion","Writing","Strategy"];
+    const R = (name, sub, pods) => ({ name: name, sub: sub, pods: pods, cap: name === "Shannon Woolley" ? 28 : 32 });
+    const SA = ["spotify","adobe"], S = ["spotify"], A = ["adobe"];
+    const makers = [
+      R("Nik Burian","Production",S), R("Dara Smith","Production",A), R("Nickie Loescher","Production",A),
+      R("Alison Pond","Design",SA), R("Brandon Morayo","Design",SA), R("Gabrielle Nguyen","Design",SA), R("Greg Dalbey","Design",SA), R("Jason Flugum","Design",SA),
+      R("Abby Hoffman","Design",A), R("Cailin Carlile","Design",A), R("Meg Wong Stoney","Design",A), R("Michael Al-Jiboori","Design",A), R("Sarah Morgan","Design",A), R("Ty Sokalski","Design",A),
+      R("Faulkner Allocco","Motion",S), R("Griffen Snow","Motion",SA), R("Sam Cohen","Motion",SA), R("Sarah Haftorson","Motion",SA),
+      R("Amanda LaMarco","Motion",A), R("Motion Designer","Motion",A), R("Raymund Justin Libang","Motion",A), R("Taylor Russell","Motion",A),
+      R("Dani Mrkvička","Writing",SA), R("Katie Sukalich","Writing",SA), R("Elizabeth Harney","Writing",A), R("Mary Yajko McGiver","Writing",A),
+      R("Shannon Woolley","Strategy",SA)
+    ];
+    const P = (id, pod, client, name, type, end, endIdx, bf) => ({ id: id, pod: pod, client: client, name: name, type: type, end: end, endIdx: endIdx, bf: bf });
+    const projects = {
+      S1: P("S1","spotify","Spotify","Q4 Ads","Retainer","Jan 15",8,0.95),
+      S2: P("S2","spotify","Spotify","Project B","Retainer","Feb 12",12,1.1),
+      S3: P("S3","spotify","Spotify","Project C","Retainer","Dec 18",4,1.0),
+      A1: P("A1","adobe","Adobe","Project 1","Ad hoc","Dec 11",3,1.05),
+      A2: P("A2","adobe","Adobe","Project 2","Ad hoc","Dec 18",4,1.0),
+      A3: P("A3","adobe","Adobe","Project 3","Ad hoc","Jan 15",8,1.12),
+      A4: P("A4","adobe","Adobe","Project 4","Ad hoc","Jan 29",10,0.97),
+      A5: P("A5","adobe","Adobe","Project 5","Ad hoc","Feb 12",12,1.0),
+      A6: P("A6","adobe","Adobe","Project 6","Ad hoc","Feb 26",14,1.0)
+    };
+    const L = (m, p, s, e, h) => ({ m: m, p: p, s: s, e: e, h: h });
+    const allocs = [
+      L("Nik Burian","S1",0,12,12), L("Nik Burian","S2",0,12,12), L("Nik Burian","S3",0,4,8),
+      L("Alison Pond","S1",0,5,24), L("Alison Pond","S2",0,5,8),
+      L("Brandon Morayo","S1",0,4,16), L("Brandon Morayo","S3",0,4,16),
+      L("Gabrielle Nguyen","S2",0,8,20), L("Greg Dalbey","S1",2,7,20),
+      L("Jason Flugum","S1",0,3,16), L("Jason Flugum","S2",2,8,16),
+      L("Faulkner Allocco","S1",3,8,16), L("Griffen Snow","S3",0,3,12), L("Sam Cohen","S1",4,9,24), L("Sarah Haftorson","S2",1,5,8),
+      L("Dani Mrkvička","S1",0,6,10), L("Katie Sukalich","S2",1,7,12),
+      L("Shannon Woolley","S1",0,12,4),
+      L("Nickie Loescher","A1",0,3,8), L("Nickie Loescher","A2",0,4,8), L("Nickie Loescher","A3",2,8,8), L("Nickie Loescher","A4",3,10,8), L("Nickie Loescher","A5",5,12,8), L("Nickie Loescher","A6",7,12,8),
+      L("Dara Smith","A2",0,4,10), L("Dara Smith","A5",5,12,10),
+      L("Abby Hoffman","A1",0,3,24), L("Cailin Carlile","A2",0,4,20), L("Meg Wong Stoney","A3",2,8,24), L("Michael Al-Jiboori","A4",3,8,24), L("Sarah Morgan","A5",5,10,16), L("Ty Sokalski","A6",7,12,20),
+      L("Alison Pond","A2",2,3,8), L("Gabrielle Nguyen","A1",0,1,12), L("Brandon Morayo","A2",5,7,16),
+      L("Amanda LaMarco","A1",2,3,16), L("Raymund Justin Libang","A3",4,8,20), L("Taylor Russell","A4",5,9,16), L("Griffen Snow","A2",4,6,12), L("Sam Cohen","A5",6,8,8), L("Sarah Haftorson","A4",3,5,8),
+      L("Elizabeth Harney","A1",0,3,12), L("Mary Yajko McGiver","A3",3,8,12), L("Katie Sukalich","A2",2,4,6), L("Dani Mrkvička","A3",3,5,8),
+      L("Shannon Woolley","A3",2,6,4)
+    ];
+    Object.keys(projects).forEach((id) => {
+      const pr = projects[id];
+      let planned = 0;
+      allocs.filter((a) => a.p === id).forEach((a) => {
+        const hi = Math.min(a.e, 12);
+        if (hi >= a.s) planned += a.h * (hi - a.s + 1);
+      });
+      pr.planned = planned;
+      pr.budget = Math.round((planned * pr.bf) / 10) * 10;
+    });
+    const needs = [
+      { id: "n1", p: "S2", disc: "Motion", hours: 40, from: 3, to: 5 },
+      { id: "n2", p: "A6", disc: "Design", hours: 48, from: 7, to: 9 }
+    ];
+    this._d = { weeks: weeks, SUBS: SUBS, makers: makers, projects: projects, allocs: allocs, needs: needs };
+    return this._d;
+  }
+
+  renderVals() {
+    const s = this.state;
+    const D = this.data();
+    const f1 = (n) => String(Math.round(n * 10) / 10);
+    const pct = (n) => Math.round(n * 100) + "%";
+    const podInfo = {
+      spotify: { name: "Spotify", producer: "Nik Burian", other: "adobe", otherName: "Adobe" },
+      adobe: { name: "Adobe", producer: "Nickie Loescher", other: "spotify", otherName: "Spotify" }
+    };
+    const relevant = (sub) => sub !== "Strategy";
+    const hrs = (name, w, pod) => D.allocs.filter((a) => a.m === name && a.s <= w && w <= a.e && (!pod || D.projects[a.p].pod === pod)).reduce((t, a) => t + a.h, 0);
+    const mk = (name) => D.makers.filter((m) => m.name === name)[0];
+    const accept = (unit) => () => this.setState((st) => ({ accepted: Object.assign({}, st.accepted, { [unit]: true }), selected: unit }));
+    const pick = (unit) => () => this.setState({ selected: unit });
+    const kindOf = (unit, w) => (w === 0 || s.accepted[unit]) ? "ordr" : "suggested";
+    const chipStyle = (kind, sel) => (kind === "ordr" ? "border: 1px solid var(--fg); background: var(--paper);" : "border: 1px dashed var(--hot); background: color-mix(in srgb, var(--hot) 13%, var(--bg));") + (sel ? " box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--fg);" : "");
+    const heatStyle = (frac) => {
+      if (frac > 1.0001) return "background: color-mix(in srgb, var(--hot) " + Math.round(Math.min(45, 25 + (frac - 1) * 100)) + "%, var(--bg));";
+      if (frac > 0) return "background: color-mix(in srgb, var(--acc) " + Math.round(Math.min(1, frac) * 42) + "%, var(--bg));";
+      return "";
+    };
+    const pod = s.pod;
+    const isSession = pod === "session";
+    const isPlan = !isSession;
+    const view = s.view;
+    const isWeek = isPlan && view === "week";
+    const isHeat = isPlan && view !== "week";
+    const info = podInfo[pod] || podInfo.spotify;
+    const w = s.weekIdx;
+    const nCols = view === "month" ? 4 : 13;
+    const start = view === "month" ? s.monthStart : 0;
+    const wkIdxs = [];
+    for (let i = 0; i < nCols; i++) wkIdxs.push(start + i);
+    const podMakers = D.makers.filter((m) => m.pods.indexOf(pod) >= 0);
+    const podProjects = Object.keys(D.projects).map((id) => D.projects[id]).filter((p) => p.pod === pod);
+    const podAllocsIn = (name, from, to) => D.allocs.filter((a) => a.m === name && D.projects[a.p].pod === pod && a.s <= to && a.e >= from);
+
+    const rows = [];
+    let firstUnit = "";
+    let firstSugg = "";
+    const suggestionsList = [];
+    const attention = [];
+
+    const flagFor = (m, wi) => {
+      if (!relevant(m.sub)) return "";
+      const o = hrs(m.name, wi, info.other);
+      return o > 0 ? "Also on " + info.otherName + ": " + f1(o) + "h" : "";
+    };
+
+    if (isWeek) {
+      const dayCells = (alloc, wi, withLabel, m) => [0, 1, 2, 3, 4].map(() => null);
+      const makerRow = (m, allocList, labelMode) => {
+        const tot = hrs(m.name, w);
+        const flag = flagFor(m, w);
+        const cells = [0, 1, 2, 3, 4].map(() => ({ isBlocks: true, isHeat: false, blocks: [], style: "min-height: 64px;", text: "", textStyle: "", dot: false }));
+        allocList.forEach((a) => {
+          const unit = m.name + "|" + a.p + "|" + w;
+          const kind = kindOf(unit, w);
+          if (!firstUnit) firstUnit = unit;
+          if (kind === "suggested" && !firstSugg) firstSugg = unit;
+          [0, 1, 2, 3, 4].forEach((d) => {
+            cells[d].blocks.push({
+              label: labelMode === "project" ? D.projects[a.p].name : "",
+              hrsText: f1(a.h / 5) + "h",
+              style: chipStyle(kind, s.selected === unit),
+              hasNote: !!s.notes[unit],
+              aria: m.name + ", " + D.projects[a.p].name + ", " + D.weeks[w].days[d] + ", " + f1(a.h / 5) + " hours",
+              pick: pick(unit)
+            });
+          });
+          if (kind === "suggested") {
+            const prev = D.allocs.filter((x) => x.m === m.name && x.p === a.p && x.s <= w - 1 && w - 1 <= x.e).length > 0;
+            suggestionsList.push({
+              unit: unit,
+              meta: m.name + " · " + D.weeks[w].range + " · " + f1(a.h) + "h",
+              title: D.projects[a.p].name,
+              why: prev ? "Same allocation as last week. Spread evenly across the five days, " + f1(a.h / 5) + "h a day." : "New in ORDR this week. Even split across five days, " + f1(a.h / 5) + "h a day.",
+              acceptAria: "Accept the split for " + m.name + " on " + D.projects[a.p].name,
+              accept: accept(unit)
+            });
+          }
+        });
+        return {
+          isGroup: false, rowStyle: "", labelStyle: "font-size: 15px; font-weight: 500; line-height: 1.3;",
+          label: m.name, sub: labelMode === "project" ? pct(tot / m.cap) + " of " + m.cap + "h in ORDR" : m.sub,
+          hasFlag: !!flag, flag: flag, barOn: false, barStyle: "", cells: cells
+        };
+      };
+      if (s.group === "people") {
+        D.SUBS.forEach((sub) => {
+          const ms = podMakers.filter((m) => m.sub === sub).filter((m) => s.roster || podAllocsIn(m.name, w, w).length > 0);
+          if (!ms.length) return;
+          let tot = 0;
+          ms.forEach((m) => { tot += podAllocsIn(m.name, w, w).reduce((t, a) => t + a.h, 0); });
+          const budgetNote = sub === "Strategy" ? "Counts against budget" : "";
+          rows.push({
+            isGroup: true, rowStyle: "background: var(--paper);", labelStyle: "font-size: 11.5px; font-weight: 600; letter-spacing: 0.14em; text-transform: uppercase;",
+            label: sub, sub: budgetNote, hasFlag: false, flag: "", barOn: false, barStyle: "",
+            cells: [0, 1, 2, 3, 4].map(() => ({ isBlocks: false, isHeat: true, blocks: [], style: "min-height: 36px; justify-content: center;", text: tot > 0 ? f1(tot / 5) + "h" : "", textStyle: "font-size: 12px; color: var(--soft);", dot: false }))
+          });
+          ms.forEach((m) => rows.push(makerRow(m, podAllocsIn(m.name, w, w), "project")));
+        });
+      } else {
+        podProjects.forEach((p) => {
+          const al = D.allocs.filter((a) => a.p === p.id && a.s <= w && w <= a.e);
+          if (!al.length) return;
+          let tot = 0;
+          al.forEach((a) => { tot += a.h; });
+          const over = p.planned > p.budget;
+          rows.push({
+            isGroup: true, rowStyle: "background: var(--paper);", labelStyle: "font-size: 15px; font-weight: 500; line-height: 1.3;",
+            label: p.client + " › " + p.name, sub: p.type + " · ends " + p.end + " · " + p.planned + "h of " + p.budget + "h budget" + (over ? " (over)" : ""),
+            hasFlag: false, flag: "", barOn: true, barStyle: "width: " + Math.min(100, Math.round((p.planned / p.budget) * 100)) + "%; background: " + (over ? "var(--hot)" : "var(--acc)") + ";",
+            cells: [0, 1, 2, 3, 4].map(() => ({ isBlocks: false, isHeat: true, blocks: [], style: "min-height: 36px; justify-content: center;", text: f1(tot / 5) + "h", textStyle: "font-size: 12px; color: var(--soft);", dot: false }))
+          });
+          const names = [];
+          al.forEach((a) => { if (names.indexOf(a.m) < 0) names.push(a.m); });
+          names.forEach((n) => rows.push(makerRow(mk(n), al.filter((a) => a.m === n), "hours")));
+        });
+      }
+      // attention for the week
+      podMakers.forEach((m) => {
+        if (podAllocsIn(m.name, w, w).length === 0) return;
+        const tot = hrs(m.name, w);
+        if (tot > m.cap) attention.push({ title: m.name + " is over capacity", detail: f1(tot) + "h of " + m.cap + "h (" + pct(tot / m.cap) + ") in " + D.weeks[w].range + "." });
+        else if (flagFor(m, w)) attention.push({ title: m.name + " is split across both clients", detail: flagFor(m, w) + " and " + f1(hrs(m.name, w, pod)) + "h here, " + f1(tot) + "h of " + m.cap + "h in total." });
+      });
+    } else if (isHeat) {
+      const cellFor = (m, wi, mode) => {
+        const tot = hrs(m.name, wi);
+        const flag = flagFor(m, wi);
+        const own = mode === "project" ? 0 : tot;
+        return { tot: tot, flag: flag, own: own };
+      };
+      if (s.group === "people") {
+        D.SUBS.forEach((sub) => {
+          const ms = podMakers.filter((m) => m.sub === sub).filter((m) => s.roster || podAllocsIn(m.name, wkIdxs[0], wkIdxs[nCols - 1]).length > 0);
+          if (!ms.length) return;
+          rows.push({
+            isGroup: true, rowStyle: "background: var(--paper);", labelStyle: "font-size: 11.5px; font-weight: 600; letter-spacing: 0.14em; text-transform: uppercase;",
+            label: sub, sub: sub === "Strategy" ? "Counts against budget" : "",
+            hasFlag: false, flag: "", barOn: false, barStyle: "",
+            cells: wkIdxs.map((wi) => {
+              let t = 0;
+              ms.forEach((m) => { t += hrs(m.name, wi, pod); });
+              return { isBlocks: false, isHeat: true, blocks: [], style: "min-height: 36px; justify-content: center;", text: t > 0 ? f1(t) : "–", textStyle: "font-size: " + (view === "month" ? "12px" : "11px") + "; color: var(--soft);", dot: false };
+            })
+          });
+          ms.forEach((m) => {
+            rows.push({
+              isGroup: false, rowStyle: "", labelStyle: "font-size: 15px; font-weight: 500; line-height: 1.3;",
+              label: m.name, sub: m.cap + "h a week", hasFlag: false, flag: "", barOn: false, barStyle: "",
+              cells: wkIdxs.map((wi) => {
+                const c = cellFor(m, wi, "people");
+                const frac = c.tot / m.cap;
+                return {
+                  isBlocks: false, isHeat: true, blocks: [], style: "min-height: 48px; justify-content: center; align-items: center; " + heatStyle(frac),
+                  text: c.tot > 0 ? (view === "month" ? f1(c.tot) + "h · " + pct(frac) : f1(c.tot)) : "–",
+                  textStyle: "font-size: " + (view === "month" ? "12.5px" : "11px") + "; color: var(--fg);", dot: !!c.flag
+                };
+              })
+            });
+          });
+        });
+      } else {
+        podProjects.forEach((p) => {
+          const al = D.allocs.filter((a) => a.p === p.id && a.s <= wkIdxs[nCols - 1] && a.e >= wkIdxs[0]);
+          if (!al.length) return;
+          const over = p.planned > p.budget;
+          rows.push({
+            isGroup: true, rowStyle: "background: var(--paper);", labelStyle: "font-size: 15px; font-weight: 500; line-height: 1.3;",
+            label: p.client + " › " + p.name, sub: p.type + " · ends " + p.end + " · " + p.planned + "h of " + p.budget + "h budget" + (over ? " (over)" : ""),
+            hasFlag: false, flag: "", barOn: true, barStyle: "width: " + Math.min(100, Math.round((p.planned / p.budget) * 100)) + "%; background: " + (over ? "var(--hot)" : "var(--acc)") + ";",
+            cells: wkIdxs.map((wi) => {
+              const t = D.allocs.filter((a) => a.p === p.id && a.s <= wi && wi <= a.e).reduce((x, a) => x + a.h, 0);
+              const endMark = p.endIdx === wi ? " · ends" : "";
+              return { isBlocks: false, isHeat: true, blocks: [], style: "min-height: 36px; justify-content: center;", text: (t > 0 ? f1(t) : "–") + (view === "month" ? endMark : ""), textStyle: "font-size: " + (view === "month" ? "12px" : "11px") + "; color: var(--soft); font-weight: " + (p.endIdx === wi ? "600" : "400") + ";", dot: false };
+            })
+          });
+          const names = [];
+          al.forEach((a) => { if (names.indexOf(a.m) < 0) names.push(a.m); });
+          names.forEach((n) => {
+            const m = mk(n);
+            rows.push({
+              isGroup: false, rowStyle: "", labelStyle: "font-size: 15px; font-weight: 500; line-height: 1.3;",
+              label: m.name, sub: m.sub, hasFlag: false, flag: "", barOn: false, barStyle: "",
+              cells: wkIdxs.map((wi) => {
+                const h = al.filter((a) => a.m === n && a.s <= wi && wi <= a.e).reduce((x, a) => x + a.h, 0);
+                const flag = flagFor(m, wi);
+                return { isBlocks: false, isHeat: true, blocks: [], style: "min-height: 44px; justify-content: center; align-items: center; " + heatStyle(h / m.cap), text: h > 0 ? f1(h) + (view === "month" ? "h" : "") : "–", textStyle: "font-size: " + (view === "month" ? "12.5px" : "11px") + "; color: var(--fg);", dot: h > 0 && !!flag };
+              })
+            });
+          });
+        });
+      }
+      // attention across the window
+      podMakers.forEach((m) => {
+        let overW = -1, flagW = -1;
+        wkIdxs.forEach((wi) => {
+          if (hrs(m.name, wi, pod) === 0) return;
+          if (overW < 0 && hrs(m.name, wi) > m.cap) overW = wi;
+          if (flagW < 0 && flagFor(m, wi)) flagW = wi;
+        });
+        if (overW >= 0) attention.push({ title: m.name + " goes over capacity", detail: "First in the week of " + D.weeks[overW].label + ": " + f1(hrs(m.name, overW)) + "h of " + m.cap + "h." });
+        else if (flagW >= 0) attention.push({ title: m.name + " is on both clients", detail: "First in the week of " + D.weeks[flagW].label + ". " + flagFor(m, flagW) + "." });
+      });
+    }
+
+    // heads
+    const heads = isWeek
+      ? D.weeks[w].days.map((d, i) => ({ label: d, today: w === 0 && i === 2, todayText: "Today" }))
+      : wkIdxs.map((wi) => ({ label: D.weeks[wi].label, today: wi === 0, todayText: "Now" }));
+
+    // panel (week view)
+    const selUnit = s.selected || firstSugg || firstUnit;
+    let panel = null;
+    if (isWeek && selUnit) {
+      const parts = selUnit.split("|");
+      const a = D.allocs.filter((x) => x.m === parts[0] && x.p === parts[1] && x.s <= w && w <= x.e)[0];
+      if (a && parseInt(parts[2], 10) === w && D.projects[a.p].pod === pod) {
+        const pr = D.projects[a.p];
+        const kind = kindOf(selUnit, w);
+        const cms = s.comments[selUnit] || [];
+        panel = {
+          title: pr.client + " › " + pr.name,
+          sub: a.m + " · " + D.weeks[w].range + " · " + f1(a.h) + "h a week, " + f1(a.h / 5) + "h a day",
+          statusText: kind === "ordr" ? "In ORDR, day split confirmed" : "Suggested day split",
+          dotStyle: kind === "ordr" ? "background: var(--acc);" : "background: var(--hot);",
+          ends: pr.type + " project, ends " + pr.end + ". Weekly hours come from ORDR.",
+          isSugg: kind === "suggested",
+          why: "Even split of ORDR’s weekly hours across the five days.",
+          phase: s.phases[selUnit] || "",
+          note: s.notes[selUnit] || "",
+          comments: cms, noComments: cms.length === 0,
+          accept: accept(selUnit), unit: selUnit, draft: pr.client + " › " + pr.name + ". " + pr.type + " project, ends " + pr.end + "."
+        };
+      }
+    }
+
+    // session view
+    const conflicts = [];
+    const openCap = [];
+    const ending = [];
+    const needs = [];
+    if (isSession) {
+      for (let wi = 0; wi < 4; wi++) {
+        D.makers.forEach((m) => {
+          const sH = hrs(m.name, wi, "spotify"), aH = hrs(m.name, wi, "adobe"), t = sH + aH;
+          const both = sH > 0 && aH > 0 && relevant(m.sub);
+          if (!(both || t > m.cap)) return;
+          conflicts.push({ order: (t > m.cap ? 0 : 1) * 100 + wi, tag: t > m.cap ? "Over capacity" : "Both clients", title: m.name + " · week of " + D.weeks[wi].label, detail: (sH > 0 ? "Spotify " + f1(sH) + "h" : "") + (sH > 0 && aH > 0 ? " + " : "") + (aH > 0 ? "Adobe " + f1(aH) + "h" : "") + " = " + f1(t) + "h of " + m.cap + "h (" + pct(t / m.cap) + ")." });
+        });
+      }
+      conflicts.sort((x, y) => x.order - y.order);
+      ["Design", "Motion", "Writing"].forEach((disc) => {
+        let total = 0;
+        const who = [];
+        D.makers.filter((m) => m.sub === disc).forEach((m) => {
+          const free = Math.max(0, m.cap - hrs(m.name, 0)) + Math.max(0, m.cap - hrs(m.name, 1));
+          total += free;
+          if (free / 2 >= 12) who.push({ n: m.name, avg: free / 2 });
+        });
+        who.sort((x, y) => y.avg - x.avg);
+        openCap.push({ title: disc + " · " + f1(total) + "h free", detail: who.length ? who.slice(0, 4).map((x) => x.n + " (" + f1(x.avg) + "h a week)").join(", ") : "No one with 12h or more free each week." });
+      });
+      Object.keys(D.projects).map((id) => D.projects[id]).filter((p) => p.endIdx <= 5).sort((a, b) => a.endIdx - b.endIdx).forEach((p) => {
+        const names = [];
+        D.allocs.filter((a) => a.p === p.id && a.e >= p.endIdx && a.s <= p.endIdx).forEach((a) => { if (names.indexOf(a.m) < 0) names.push(a.m); });
+        ending.push({ title: p.client + " › " + p.name + " ends " + p.end, detail: names.length ? "Frees up " + names.slice(0, 5).join(", ") + (names.length > 5 ? " and " + (names.length - 5) + " more" : "") + " the week after." : "No makers booked in its last week." });
+      });
+      D.needs.forEach((n) => {
+        const pr = D.projects[n.p];
+        const cnt = n.to - n.from + 1;
+        const rate = n.hours / cnt;
+        const other = pr.pod === "spotify" ? "adobe" : "spotify";
+        const otherName = other === "adobe" ? "Adobe" : "Spotify";
+        const cands = D.makers.filter((m) => m.sub === n.disc).map((m) => {
+          let free = 0;
+          for (let wi = n.from; wi <= n.to; wi++) free += Math.max(0, m.cap - hrs(m.name, wi));
+          const avg = free / cnt;
+          const clientWork = D.allocs.filter((a) => a.m === m.name && D.projects[a.p].pod === pr.pod).length > 0;
+          const sameProj = D.allocs.filter((a) => a.m === m.name && a.p === n.p).length > 0;
+          let otherH = 0;
+          for (let wi = n.from; wi <= n.to; wi++) otherH += hrs(m.name, wi, other);
+          const score = Math.min(avg, rate) / rate * 60 + (clientWork ? 20 : 0) + (sameProj ? 10 : 0) - (otherH > 0 ? 20 : 0);
+          const why = f1(avg) + "h a week free" + (sameProj ? " · already on this project" : (clientWork ? " · has worked on " + pr.client : "")) + (otherH > 0 ? " · also on " + otherName + " in these weeks" : "");
+          const text = m.name + " to " + pr.client + " › " + pr.name + ": " + n.disc + " " + n.hours + "h, " + D.weeks[n.from].label + " to " + D.weeks[n.to].label;
+          return { name: m.name, score: score, why: why, text: text };
+        }).sort((x, y) => y.score - x.score).slice(0, 3).map((c) => ({
+          name: c.name, why: c.why, aria: "Add " + c.name + " to decisions",
+          add: () => this.setState((st) => st.decisions.some((d) => d.text === c.text) ? null : { decisions: st.decisions.concat([{ text: c.text }]) })
+        }));
+        needs.push({ meta: pr.type + " · entered by " + (pr.pod === "spotify" ? "Nik" : "Nickie"), title: pr.client + " › " + pr.name + " needs " + n.disc + ": " + n.hours + "h, " + D.weeks[n.from].label + " to " + D.weeks[n.to].label, cands: cands });
+      });
+    }
+
+    // header
+    const tallies = [];
+    let headline = "", subline = "";
+    if (isSession) {
+      headline = "Weekly session";
+      subline = "All of G8, Spotify and Adobe together · week of " + D.weeks[0].label;
+      tallies.push({ value: String(needs.length), label: "needs to staff" });
+      tallies.push({ value: String(conflicts.length), label: "conflicts and overloads" });
+      tallies.push({ value: String(ending.length), label: "projects ending soon" });
+      tallies.push({ value: String(s.decisions.length), label: "decisions recorded" });
+    } else {
+      headline = info.name;
+      const kinds = podProjects.length + " " + (pod === "spotify" ? "retainer" : "ad hoc") + " projects";
+      subline = info.producer + " · " + kinds + " · " + podMakers.length + " makers in the pool";
+      const active = podMakers.filter((m) => podAllocsIn(m.name, wkIdxs[0], wkIdxs[nCols - 1]).length > 0).length;
+      let ordrH = 0;
+      if (isWeek) podMakers.forEach((m) => { ordrH += podAllocsIn(m.name, w, w).reduce((t, a) => t + a.h, 0); });
+      else wkIdxs.forEach((wi) => podMakers.forEach((m) => { ordrH += hrs(m.name, wi, pod); }));
+      tallies.push({ value: String(active), label: "makers booked" });
+      tallies.push({ value: f1(ordrH), label: "hours in ORDR" });
+      tallies.push({ value: String(attention.length), label: "need attention" });
+      if (isWeek) tallies.push({ value: String(suggestionsList.length), label: "suggestions" });
+    }
+
+    const tab = (active) => active ? "border-bottom: 2px solid var(--fg); color: var(--fg); font-weight: 600;" : "border-bottom: 2px solid transparent; color: var(--soft); font-weight: 400;";
+    const podTabs = [["spotify", "Spotify"], ["adobe", "Adobe"], ["session", "Weekly session"]].map((t) => ({ label: t[1], style: tab(pod === t[0]), pick: () => this.setState({ pod: t[0] }) }));
+    const viewTabs = [["week", "Week"], ["month", "Month"], ["quarter", "Quarter"]].map((t) => ({ label: t[1], style: tab(view === t[0]), pick: () => this.setState({ view: t[0] }) }));
+    const groupTabs = [["people", "People"], ["projects", "Projects"]].map((t) => ({
+      label: t[1],
+      style: s.group === t[0] ? "background: var(--fg); color: var(--bg); border: 1px solid var(--fg);" : "background: transparent; color: var(--fg); border: 1px solid var(--muted);",
+      pick: () => this.setState({ group: t[0] })
+    }));
+    const showNav = isWeek || view === "month";
+    const prevNav = () => this.setState((st) => st.view === "week" ? { weekIdx: Math.max(0, st.weekIdx - 1) } : { monthStart: Math.max(0, st.monthStart - 4) });
+    const nextNav = () => this.setState((st) => st.view === "week" ? { weekIdx: Math.min(12, st.weekIdx + 1) } : { monthStart: Math.min(8, st.monthStart + 4) });
+    const navLabel = isWeek ? "Week of " + D.weeks[w].range : D.weeks[start].label + " to " + D.weeks[start + 3].label;
+    const viewNote = isWeek ? "Daily plan" : (view === "month" ? "Four weeks · read-only" : "Thirteen weeks · read-only");
+
+    const accAll = () => this.setState((st) => {
+      const next = Object.assign({}, st.accepted);
+      suggestionsList.forEach((x) => { next[x.unit] = true; });
+      return { accepted: next };
+    });
+
+    return {
+      themeStyle: s.dark ? "--bg: #0A1214; --fg: #E4F0F1; --acc: #4FD1DC; --hot: #FF936B;" : "--bg: #F5F8F8; --fg: #0F1D21; --acc: #0E9AA7; --hot: #E05A33;",
+      lookText: s.dark ? "Light" : "Dark",
+      toggleLook: () => this.setState((st) => ({ dark: !st.dark })),
+      headline: headline, subline: subline, tallies: tallies,
+      podTabs: podTabs, viewTabs: viewTabs, groupTabs: groupTabs,
+      isPlan: isPlan, isSession: isSession, isWeek: isWeek, isHeat: isHeat,
+      rosterText: s.roster ? "Hide idle makers" : "Show full roster (" + podMakers.length + ")",
+      toggleRoster: () => this.setState((st) => ({ roster: !st.roster })),
+      showNav: showNav, prevNav: prevNav, nextNav: nextNav, navLabel: navLabel,
+      prevOff: isWeek ? w <= 0 : start <= 0,
+      nextOff: isWeek ? w >= 12 : start >= 8,
+      viewNote: viewNote,
+      minWidthStyle: "min-width: " + (view === "quarter" ? 920 : 780) + "px;",
+      gridCols: isWeek ? "repeat(5, minmax(0, 1fr))" : (view === "month" ? "repeat(4, minmax(0, 1fr))" : "repeat(13, minmax(46px, 1fr))"),
+      heads: heads, rows: rows,
+      suggestions: suggestionsList, suggestCount: suggestionsList.length,
+      noSuggestions: suggestionsList.length === 0,
+      noSuggestText: w === 0 ? "This week’s splits are already confirmed in ORDR." : "Nothing waiting. Every split this week is confirmed.",
+      acceptAll: accAll, acceptAllText: "Accept all (" + suggestionsList.length + ")",
+      attention: attention, attentionCount: attention.length, noAttention: attention.length === 0,
+      hasPanel: !!panel, noPanel: !panel,
+      panel: panel || { title: "", sub: "", statusText: "", dotStyle: "", ends: "", isSugg: false, why: "", phase: "", note: "", comments: [], noComments: true, accept: () => {} },
+      commentAs: "Comment as " + info.producer.split(" ")[0],
+      commentDraft: s.draftComment,
+      onPhase: (e) => { const v = e.target.value; this.setState((st) => ({ phases: Object.assign({}, st.phases, { [selUnit]: v }) })); },
+      onNote: (e) => { const v = e.target.value; this.setState((st) => ({ notes: Object.assign({}, st.notes, { [selUnit]: v }) })); },
+      onDraftNote: () => { if (!panel) return; const t = panel.draft; this.setState((st) => ({ notes: Object.assign({}, st.notes, { [selUnit]: t }) })); },
+      onCommentText: (e) => { const v = e.target.value; this.setState({ draftComment: v }); },
+      onPost: () => {
+        const who = info.producer.split(" ")[0];
+        this.setState((st) => {
+          const t = (st.draftComment || "").trim();
+          if (!t || !selUnit) return null;
+          const list = (st.comments[selUnit] || []).concat([{ who: who, text: t }]);
+          return { comments: Object.assign({}, st.comments, { [selUnit]: list }), draftComment: "" };
+        });
+      },
+      needs: needs, conflicts: conflicts, conflictCount: conflicts.length, noConflicts: conflicts.length === 0,
+      openCap: openCap, ending: ending,
+      decisions: s.decisions, noDecisions: s.decisions.length === 0,
+      decisionDraft: s.decisionDraft,
+      onDecisionText: (e) => { const v = e.target.value; this.setState({ decisionDraft: v }); },
+      onDecisionAdd: () => this.setState((st) => {
+        const t = (st.decisionDraft || "").trim();
+        if (!t) return null;
+        return { decisions: st.decisions.concat([{ text: t }]), decisionDraft: "" };
+      })
+    };
+  }
+}
+
+/* ---- standalone renderer: turns renderVals() into HTML ---- */
+const esc = (s) => String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+let HANDLERS = [];
+const H = (fn) => { HANDLERS.push(fn); return HANDLERS.length - 1; };
+const NOTE_ICON = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" role="img" aria-label="Has a note"><path d="M4 20h4L19 9l-4-4L4 16v4z"/></svg>';
+const DOT = '<span style="width:6px;height:6px;border-radius:50%;background:var(--hot);display:inline-block" role="img" aria-label="Also allocated to the other client"></span>';
+const LABEL = "margin:0 0 12px;font-weight:600;font-size:11.5px;line-height:1;letter-spacing:.14em;text-transform:uppercase;color:var(--soft);display:flex;align-items:center;gap:8px";
+const SQ = (c) => '<i style="width:8px;height:8px;border-radius:2px;background:' + c + ';display:inline-block"></i>';
+const OUTLINE_BTN = "min-height:44px;padding:0 14px;font-size:12px;font-weight:500;color:var(--fg);background:transparent;border:1px solid var(--muted);border-radius:4px;cursor:pointer";
+const SOLID_BTN = "min-height:44px;padding:0 16px;border:1px solid var(--fg);border-radius:4px;background:var(--fg);color:var(--bg);font-size:12px;font-weight:500;cursor:pointer";
+const INPUT = "box-sizing:border-box;width:100%;min-height:44px;border:1px solid var(--muted);border-radius:4px;background:transparent;padding:0 12px;font-family:inherit;font-size:14px;color:var(--fg)";
+const SECT_ITEM = "padding:12px 0 13px;border-bottom:1px solid var(--rule)";
+const EMPTY = (t) => '<p style="margin:0;padding:12px 0;border-bottom:1px solid var(--rule);color:var(--soft);font-size:14px">' + esc(t) + "</p>";
+
+function btn(style, fn, label, extra) {
+  return '<button data-h="' + H(fn) + '" ' + (extra || "") + ' style="' + style + '">' + esc(label) + "</button>";
+}
+
+function view(v) {
+  const tallies = v.tallies.map((t) => '<span><b style="font-weight:400;font-size:19px;line-height:1;color:var(--fg);margin-right:4px">' + esc(t.value) + "</b>" + esc(t.label) + "</span>").join("");
+  const podTabs = v.podTabs.map((t) => btn(t.style + " min-height:44px;padding:0 2px;background:transparent;border:none;font-size:15px;cursor:pointer", t.pick, t.label)).join("");
+  const viewTabs = v.isPlan ? '<div style="display:flex;flex-wrap:wrap;gap:0 22px">' + v.viewTabs.map((t) => btn(t.style + " min-height:44px;padding:0 2px;background:transparent;border:none;font-size:14px;cursor:pointer", t.pick, t.label)).join("") + "</div>" : "";
+
+  let body = "";
+  if (v.isPlan) {
+    const groupTabs = v.groupTabs.map((t) => btn(t.style + " min-height:44px;padding:0 14px;font-size:12px;font-weight:500;border-radius:4px;cursor:pointer", t.pick, t.label)).join("");
+    const nav = v.showNav
+      ? '<span style="margin-left:auto;display:inline-flex;align-items:center;gap:8px">' +
+        btn(OUTLINE_BTN, v.prevNav, "Earlier", (v.prevOff ? "disabled " : "") + 'aria-label="Earlier"') +
+        '<span style="font-size:14px;min-width:130px;text-align:center">' + esc(v.navLabel) + "</span>" +
+        btn(OUTLINE_BTN, v.nextNav, "Later", (v.nextOff ? "disabled " : "") + 'aria-label="Later"') + "</span>"
+      : "";
+    const controls = '<div style="display:flex;flex-wrap:wrap;align-items:center;gap:10px 14px;margin-bottom:18px"><span style="font-size:11.5px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;color:var(--soft)">Group by</span>' + groupTabs +
+      btn(OUTLINE_BTN.replace("var(--muted)", "var(--rule)"), v.toggleRoster, v.rosterText) + nav + "</div>";
+
+    const legend =
+      '<p style="margin:0 0 12px;font-size:12px;color:var(--soft);display:flex;flex-wrap:wrap;gap:4px 16px"><span style="font-weight:600;font-size:11.5px;letter-spacing:.14em;text-transform:uppercase">' + esc(v.viewNote) + "</span>" +
+      (v.isWeek
+        ? '<span style="display:inline-flex;align-items:center;gap:5px"><span style="width:14px;height:10px;border-radius:2px;border:1px solid var(--fg);background:var(--paper);box-sizing:border-box;display:inline-block"></span>In ORDR, split confirmed</span><span style="display:inline-flex;align-items:center;gap:5px"><span style="width:14px;height:10px;border-radius:2px;border:1px dashed var(--hot);background:color-mix(in srgb, var(--hot) 13%, var(--bg));box-sizing:border-box;display:inline-block"></span>Suggested split</span>'
+        : '<span style="display:inline-flex;align-items:center;gap:5px"><span style="width:14px;height:10px;border-radius:2px;background:color-mix(in srgb, var(--acc) 30%, var(--bg));display:inline-block"></span>Share of capacity</span><span style="display:inline-flex;align-items:center;gap:5px"><span style="width:14px;height:10px;border-radius:2px;background:color-mix(in srgb, var(--hot) 35%, var(--bg));display:inline-block"></span>Over capacity</span>') +
+      '<span style="display:inline-flex;align-items:center;gap:5px"><span style="width:6px;height:6px;border-radius:50%;background:var(--hot);display:inline-block"></span>Also allocated to the other client</span></p>';
+
+    const heads = v.heads.map((h) => '<div style="padding:10px 6px 8px;border-left:1px solid var(--rule);display:flex;align-items:center;gap:6px;flex-wrap:wrap"><span style="font-size:11px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:var(--soft)">' + esc(h.label) + "</span>" + (h.today ? '<span style="font-size:11px;font-weight:500;color:var(--bg);background:var(--fg);border-radius:4px;padding:0 5px">' + esc(h.todayText) + "</span>" : "") + "</div>").join("");
+
+    const rows = v.rows.map((r) => {
+      const left = '<div style="padding:9px 10px 9px 6px;min-width:0"><div style="' + r.labelStyle + '">' + esc(r.label) + '</div><div style="font-size:12px;color:var(--soft);line-height:1.4">' + esc(r.sub) + "</div>" +
+        (r.hasFlag ? '<div style="font-size:12px;color:var(--fg);line-height:1.4;display:flex;align-items:center;gap:6px;margin-top:2px"><span style="width:6px;height:6px;border-radius:50%;background:var(--hot);flex:none;display:inline-block"></span>' + esc(r.flag) + "</div>" : "") +
+        (r.barOn ? '<div style="height:3px;background:var(--rule);margin-top:6px"><div style="' + r.barStyle + ' height:3px"></div></div>' : "") + "</div>";
+      const cells = r.cells.map((c) => {
+        let inner = "";
+        if (c.isBlocks) {
+          inner = c.blocks.map((b) => '<button data-h="' + H(b.pick) + '" aria-label="' + esc(b.aria) + '" style="' + b.style + ' width:100%;box-sizing:border-box;text-align:left;border-radius:5px;color:var(--fg);padding:4px 7px;cursor:pointer;display:flex;flex-direction:column;min-height:40px"><span style="font-size:12px;font-weight:500;line-height:1.25">' + esc(b.label) + '</span><span style="font-size:12px;color:var(--soft);display:flex;align-items:center;gap:5px;font-variant-numeric:tabular-nums">' + esc(b.hrsText) + (b.hasNote ? NOTE_ICON : "") + "</span></button>").join("");
+        }
+        if (c.isHeat) {
+          inner = '<span style="' + c.textStyle + ' display:inline-flex;align-items:center;gap:5px;font-variant-numeric:tabular-nums">' + esc(c.text) + (c.dot ? DOT : "") + "</span>";
+        }
+        return '<div style="' + c.style + ' box-sizing:border-box;border-left:1px solid var(--rule);padding:5px;display:flex;flex-direction:column;gap:4px">' + inner + "</div>";
+      }).join("");
+      return '<div style="display:grid;grid-template-columns:220px minmax(0,1fr);border-top:1px solid var(--rule);' + r.rowStyle + '">' + left + '<div style="display:grid;grid-template-columns:' + v.gridCols + '">' + cells + "</div></div>";
+    }).join("");
+
+    const grid = '<div style="overflow-x:auto;border-top:2px solid var(--fg)"><div style="' + v.minWidthStyle + '"><div style="display:grid;grid-template-columns:220px minmax(0,1fr)"><div></div><div style="display:grid;grid-template-columns:' + v.gridCols + '">' + heads + "</div></div>" + rows + "</div></div>";
+
+    let suggest = "";
+    if (v.isWeek) {
+      const items = v.noSuggestions ? EMPTY(v.noSuggestText) : v.suggestions.map((s) =>
+        '<div style="padding:12px 0 13px;border-bottom:1px solid var(--rule);display:flex;flex-wrap:wrap;gap:10px 16px;align-items:center;justify-content:space-between"><div style="flex:1 1 280px;min-width:0"><p style="margin:0;font-size:11.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--soft)">' + esc(s.meta) + '</p><div style="font-weight:500;font-size:16px;line-height:1.35;margin:2px 0 3px">' + esc(s.title) + '</div><p style="margin:0;font-size:14px;line-height:1.5;color:var(--soft);max-width:62ch">' + esc(s.why) + "</p></div>" + btn(SOLID_BTN, s.accept, "Accept", 'aria-label="' + esc(s.acceptAria) + '"') + "</div>").join("");
+      suggest = '<div><p style="' + LABEL + '">' + SQ("var(--hot)") + "Suggestions <span style=\"font-weight:500;letter-spacing:0\">" + esc(v.suggestCount) + "</span>" +
+        btn("margin-left:auto;min-height:36px;padding:0 12px;font-size:11.5px;font-weight:500;letter-spacing:0;text-transform:none;color:var(--fg);background:transparent;border:1px solid var(--muted);border-radius:4px;cursor:pointer", v.acceptAll, v.acceptAllText) +
+        '</p><div style="border-top:1px solid var(--rule)">' + items + "</div></div>";
+    }
+
+    const att = v.noAttention ? EMPTY("Nothing needs attention in this window.") : v.attention.map((a) => '<div style="' + SECT_ITEM + '"><div style="font-weight:500;font-size:16px;line-height:1.35;margin-bottom:3px">' + esc(a.title) + '</div><p style="margin:0;font-size:14px;line-height:1.5;color:var(--soft)">' + esc(a.detail) + "</p></div>").join("");
+    const attention = '<div><p style="' + LABEL + '">' + SQ("var(--hot)") + 'Needs attention <span style="font-weight:500;letter-spacing:0">' + esc(v.attentionCount) + '</span></p><div style="border-top:1px solid var(--rule)">' + att + "</div></div>";
+
+    let panelHtml = "";
+    if (v.isWeek) {
+      let inner = "";
+      if (v.noPanel) {
+        inner = '<p style="margin:0;font-size:14px;color:var(--soft)">Select a block to see its note, phase and comments.</p>';
+      } else {
+        const p = v.panel;
+        const sugg = p.isSugg ? '<div style="background:color-mix(in srgb, var(--hot) 13%, var(--bg));border:1px dashed var(--hot);border-radius:5px;padding:12px;display:flex;flex-direction:column;gap:10px"><div style="font-size:14px;line-height:1.5"><strong style="font-weight:600">Why:</strong> ' + esc(p.why) + "</div><div>" + btn(SOLID_BTN, p.accept, "Accept") + "</div></div>" : "";
+        const cms = p.noComments ? EMPTY("No comments on this block yet.") : p.comments.map((c) => '<div style="padding:12px 0;border-bottom:1px solid var(--rule)"><p style="margin:0;font-size:11.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--soft)">' + esc(c.who) + '</p><div style="font-size:14px;line-height:1.5">' + esc(c.text) + "</div></div>").join("");
+        const smallLabel = "font-weight:600;font-size:11.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--soft)";
+        inner = '<div style="display:flex;flex-direction:column;gap:18px">' +
+          '<div><h2 style="margin:0 0 4px;font-weight:400;font-size:26px;line-height:1.15;letter-spacing:-.005em">' + esc(p.title) + '</h2><div style="font-size:14px;color:var(--soft)">' + esc(p.sub) + '</div><div style="margin-top:10px;display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:500;border:1px solid var(--rule);border-radius:4px;padding:3px 8px"><span style="' + p.dotStyle + ' width:6px;height:6px;border-radius:50%;display:inline-block"></span>' + esc(p.statusText) + "</div></div>" +
+          '<div style="font-size:13px;color:var(--soft)">' + esc(p.ends) + "</div>" + sugg +
+          '<div style="display:flex;flex-direction:column;gap:6px"><label for="phase" style="' + smallLabel + '">Phase and sequence</label><input id="phase" type="text" data-h="' + H(v.onPhase) + '" value="' + esc(p.phase) + '" placeholder="For example: Design, then Motion" style="' + INPUT + '"></div>' +
+          '<div style="display:flex;flex-direction:column;gap:6px"><div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><label for="note" style="' + smallLabel + '">Note</label>' + btn("min-height:36px;padding:0 12px;border:1px solid var(--muted);border-radius:4px;background:transparent;color:var(--fg);font-size:11.5px;font-weight:500;cursor:pointer", v.onDraftNote, "Draft from project data") + '</div><textarea id="note" rows="3" data-h="' + H(v.onNote) + '" placeholder="What is this person working on?" style="box-sizing:border-box;width:100%;border:1px solid var(--muted);border-radius:4px;background:transparent;padding:10px 12px;font-family:inherit;font-size:14px;line-height:1.5;color:var(--fg);resize:vertical">' + esc(p.note) + "</textarea></div>" +
+          '<div style="display:flex;flex-direction:column;gap:10px"><div style="' + smallLabel + '">Comments</div><div style="border-top:1px solid var(--rule)">' + cms + '</div><label for="comment" style="font-size:13px;color:var(--soft)">' + esc(v.commentAs) + '</label><div style="display:flex;gap:8px"><input id="comment" type="text" data-h="' + H(v.onCommentText) + '" data-enter="' + H(v.onPost) + '" value="' + esc(v.commentDraft) + '" placeholder="Add a comment" style="box-sizing:border-box;flex:1 1 auto;min-width:0;min-height:44px;border:1px solid var(--muted);border-radius:4px;background:transparent;padding:0 12px;font-family:inherit;font-size:14px;color:var(--fg)">' + btn(SOLID_BTN.replace("0 16px", "0 18px"), v.onPost, "Post") + "</div></div></div>";
+      }
+      panelHtml = '<div style="flex:1 1 320px;min-width:0;border-top:2px solid var(--fg);padding-top:14px;display:flex;flex-direction:column;gap:18px"><p style="' + LABEL.replace("margin:0 0 12px", "margin:0") + '">' + SQ("var(--acc)") + "Block</p>" + inner + "</div>";
+    }
+
+    body = controls + '<div style="display:flex;flex-wrap:wrap;align-items:flex-start;gap:36px 44px"><div style="flex:999 1 640px;min-width:0;display:flex;flex-direction:column;gap:36px"><div>' + legend + grid + "</div>" + suggest + attention + "</div>" + panelHtml + "</div>";
+  }
+
+  if (v.isSession) {
+    const needs = v.needs.map((n) => '<div style="padding:14px 0 16px;border-bottom:1px solid var(--rule)"><p style="margin:0;font-size:11.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--soft)">' + esc(n.meta) + '</p><div style="font-weight:500;font-size:18px;line-height:1.35;margin:2px 0 8px">' + esc(n.title) + "</div>" +
+      n.cands.map((c) => '<div style="display:flex;flex-wrap:wrap;gap:8px 16px;align-items:center;justify-content:space-between;padding:8px 0;border-top:1px solid var(--rule)"><div style="flex:1 1 260px;min-width:0"><div style="font-size:15px;font-weight:500">' + esc(c.name) + '</div><div style="font-size:13px;color:var(--soft)">' + esc(c.why) + "</div></div>" + btn(OUTLINE_BTN.replace("0 14px", "0 14px"), c.add, "Add to decisions", 'aria-label="' + esc(c.aria) + '"') + "</div>").join("") + "</div>").join("");
+    const conflicts = v.noConflicts ? EMPTY("No one is split across both clients in the next four weeks.") : v.conflicts.map((x) => '<div style="padding:11px 0 12px;border-bottom:1px solid var(--rule)"><p style="margin:0;font-size:11.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--soft)">' + esc(x.tag) + '</p><div style="font-weight:500;font-size:16px;line-height:1.35;margin:2px 0">' + esc(x.title) + '</div><p style="margin:0;font-size:14px;line-height:1.5;color:var(--soft)">' + esc(x.detail) + "</p></div>").join("");
+    const simple = (list) => list.map((o) => '<div style="padding:11px 0 12px;border-bottom:1px solid var(--rule)"><div style="font-weight:500;font-size:16px;line-height:1.35">' + esc(o.title) + '</div><p style="margin:0;font-size:14px;line-height:1.5;color:var(--soft)">' + esc(o.detail) + "</p></div>").join("");
+    const decisions = (v.noDecisions ? EMPTY("Nothing recorded yet.") : v.decisions.map((d) => '<div style="padding:11px 0 12px;border-bottom:1px solid var(--rule);font-size:14px;line-height:1.5">' + esc(d.text) + "</div>").join(""));
+    body = '<div style="display:flex;flex-wrap:wrap;align-items:flex-start;gap:36px 44px"><div style="flex:999 1 560px;min-width:0;display:flex;flex-direction:column;gap:40px">' +
+      '<div><p style="' + LABEL + '">' + SQ("var(--acc)") + 'Work that needs people</p><p style="margin:0 0 12px;font-size:14px;color:var(--soft);max-width:70ch">Producers enter a need as a discipline, hours and a date range. Candidates are ranked by free capacity, history with the client, and conflicts with the other client in those weeks.</p><div style="border-top:2px solid var(--fg)">' + needs + "</div></div>" +
+      '<div><p style="' + LABEL + '">' + SQ("var(--hot)") + 'Conflicts and overloads · next four weeks <span style="font-weight:500;letter-spacing:0">' + esc(v.conflictCount) + '</span></p><div style="border-top:1px solid var(--rule)">' + conflicts + "</div></div>" +
+      '<div><p style="' + LABEL + '">' + SQ("var(--acc)") + 'Open capacity · next two weeks</p><div style="border-top:1px solid var(--rule)">' + simple(v.openCap) + "</div></div>" +
+      '<div><p style="' + LABEL + '">' + SQ("var(--acc)") + 'Projects ending soon</p><div style="border-top:1px solid var(--rule)">' + simple(v.ending) + "</div></div></div>" +
+      '<div style="flex:1 1 320px;min-width:0;border-top:2px solid var(--fg);padding-top:14px;display:flex;flex-direction:column;gap:14px"><p style="' + LABEL.replace("margin:0 0 12px", "margin:0") + '">' + SQ("var(--fg)") + 'Decisions this week</p><p style="margin:0;font-size:13px;color:var(--soft)">Calls made in the room. In the real build these show on both producers’ plans.</p><div style="border-top:1px solid var(--rule)">' + decisions + "</div>" +
+      '<label for="decision" style="font-size:13px;color:var(--soft)">Record a decision</label><div style="display:flex;gap:8px"><input id="decision" type="text" data-h="' + H(v.onDecisionText) + '" data-enter="' + H(v.onDecisionAdd) + '" value="' + esc(v.decisionDraft) + '" placeholder="For example: Sam to Adobe from Dec 28" style="box-sizing:border-box;flex:1 1 auto;min-width:0;min-height:44px;border:1px solid var(--muted);border-radius:4px;background:transparent;padding:0 12px;font-family:inherit;font-size:14px;color:var(--fg)">' + btn(SOLID_BTN.replace("0 16px", "0 18px"), v.onDecisionAdd, "Add") + "</div></div></div>";
+  }
+
+  return '<div style="' + v.themeStyle + ' --paper:color-mix(in srgb, var(--fg) 5%, var(--bg));--muted:color-mix(in srgb, var(--fg) 58%, var(--bg));--soft:color-mix(in srgb, var(--fg) 78%, var(--bg));--rule:color-mix(in srgb, var(--fg) 14%, var(--bg));background:var(--bg);color:var(--fg);min-height:100vh;font-family:Inter,system-ui,\'Helvetica Neue\',Arial,sans-serif;font-size:15px;line-height:1.55;-webkit-font-smoothing:antialiased">' +
+    '<div style="box-sizing:border-box;max-width:1240px;margin:0 auto;padding:18px 20px 56px">' +
+    '<div style="display:flex;flex-wrap:wrap;justify-content:space-between;gap:6px 16px;font-size:12px;color:var(--soft)"><span style="letter-spacing:.14em;text-transform:uppercase;font-weight:500">Allocation planner · review build</span><span style="display:inline-flex;align-items:center;gap:6px"><span style="width:6px;height:6px;border-radius:50%;background:var(--hot);display:inline-block"></span>Sample data. ORDR hours stay read-only.</span></div>' +
+    '<div style="display:flex;flex-wrap:wrap;justify-content:space-between;align-items:flex-end;gap:16px;padding-bottom:18px"><div><h1 style="font-weight:400;font-size:clamp(30px,5vw,44px);line-height:1.05;margin:18px 0 6px;letter-spacing:-.005em">' + esc(v.headline) + '</h1><p style="margin:0 0 10px;font-size:14px;color:var(--soft)">' + esc(v.subline) + '</p><p style="margin:0;font-size:14px;color:var(--soft);display:flex;flex-wrap:wrap;gap:2px 18px">' + tallies + "</p></div>" + btn(OUTLINE_BTN, v.toggleLook, v.lookText) + "</div>" +
+    '<div style="display:flex;flex-wrap:wrap;justify-content:space-between;align-items:flex-end;gap:4px 24px;border-bottom:1px solid var(--rule);margin-bottom:18px"><div style="display:flex;flex-wrap:wrap;gap:0 22px">' + podTabs + "</div>" + viewTabs + "</div>" +
+    body + "</div></div>";
+}
+
+
+
+/* ---- boot ---- */
+let comp;
+const app = document.getElementById("app");
+function render() {
+  const y = window.scrollY;
+  HANDLERS = [];
+  app.innerHTML = view(comp.renderVals());
+  window.scrollTo(0, y);
+}
+comp = new Component({});
+app.addEventListener("click", (e) => {
+  const t = e.target.closest("[data-h]");
+  if (!t || t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.disabled) return;
+  const fn = HANDLERS[+t.getAttribute("data-h")];
+  if (fn) fn(e);
+});
+app.addEventListener("input", (e) => {
+  const t = e.target;
+  if ((t.tagName === "INPUT" || t.tagName === "TEXTAREA") && t.hasAttribute("data-h")) {
+    comp._silent = true;
+    try { HANDLERS[+t.getAttribute("data-h")](e); } finally { comp._silent = false; }
+  }
+});
+app.addEventListener("keydown", (e) => {
+  const t = e.target;
+  if (e.key === "Enter" && t.tagName === "INPUT" && t.hasAttribute("data-enter")) {
+    comp._silent = true;
+    try { HANDLERS[+t.getAttribute("data-h")](e); } finally { comp._silent = false; }
+    HANDLERS[+t.getAttribute("data-enter")](e);
+  }
+});
+render();
+
+</script>
+</body>
+</html>
